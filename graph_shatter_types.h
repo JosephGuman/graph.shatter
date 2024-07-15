@@ -2,13 +2,11 @@
 #include <cuda_runtime_api.h>
 #include <realm.h>
 #include <realm/cuda/cuda_access.h>
+#include <iostream>
 
 #include <map>
 
 using namespace Realm;
-
-// Logger log_app("app");
-
 
 namespace GraphShatter{
 
@@ -88,6 +86,11 @@ enum
 
 struct vertex{
   int value;
+
+  friend std::ostream& operator<<(std::ostream& os, const vertex& s) {
+    os << s.value;
+    return os;
+  }
 };
 
 struct LDSArgs{
@@ -104,6 +107,7 @@ struct PrepareGraphArgs{
   RegionInstance *ins;
   RegionInstance *ons;
   RegionInstance *insBuffer;
+  RegionInstance *bufferInputIds;
 };
 
 struct UpdateGraphArgs{
@@ -111,4 +115,9 @@ struct UpdateGraphArgs{
   RegionInstance *edgesGpu;
   RegionInstance *ins;
   RegionInstance *ons;
+  RegionInstance *insBuffer;
+  RegionInstance *bufferInputIds;
 };
+
+template<typename T>
+void printGeneralRegion(RegionInstance region, FieldID id);
