@@ -71,18 +71,15 @@ enum
 };
 
 
-// fields for edges
+// fields for edges/nodes
 enum
 {
   IN_VERTEX,
   OUT_VERTEX,
+  VERTEX_ID,
+  START_INDEX,
 };
 
-// Field for nodes
-enum
-{
-  VERTEX_ID
-};
 
 struct vertex{
   int value;

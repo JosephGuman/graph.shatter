@@ -4,8 +4,6 @@ using namespace Realm;
 
 Logger log_app("app");
 
-// void copyKernel(Rect<2> bounds, AffineAccessor<float, 2> linear_accessor,
-//                            cudaSurfaceObject_t surface);
 void examplelauncher(Rect<1> is, AffineAccessor<int, 1> linear_accessor);
 
 static void load_double_store(const void *args, size_t datalen, const void *userdata,
@@ -62,10 +60,21 @@ void generateNeighborSets(
 );
 
 void loadInsVertices(
-    AffineAccessor<vertex,1> verticesAcc,
-    AffineAccessor<size_t,1> insAcc,
-    AffineAccessor<vertex,1> insBufferAcc,
-    IndexSpace<1> insSpace
+  AffineAccessor<vertex,1> verticesAcc,
+  AffineAccessor<size_t,1> insAcc,
+  AffineAccessor<vertex,1> insBufferAcc,
+  IndexSpace<1> insSpace
+);
+
+void runIteration(
+  IndexSpace<1> edgesSpace,
+  IndexSpace<1> onsSpace,
+  AffineAccessor<vertex,1> insBufferAcc,
+  AffineAccessor<vertex,1> verticesAcc,
+  AffineAccessor<size_t,1> biiAcc,
+  AffineAccessor<size_t,1> onsAcc,
+  AffineAccessor<size_t,1> onsIndexAcc,
+  AffineAccessor<size_t,1> outputsAcc
 );
 
 template<typename T>
@@ -178,9 +187,13 @@ static void update_graph(const void *args, size_t datalen, const void *userdata,
 
   AffineAccessor<vertex,1> verticesAcc(vertices, VERTEX_ID);
   AffineAccessor<size_t,1> insAcc(ins, IN_VERTEX);
-  AffineAccessor<vertex,1> insBufferAcc(ins, VERTEX_ID);
+  AffineAccessor<size_t,1> onsAcc(ons, OUT_VERTEX);
+  AffineAccessor<size_t,1> onsIndexAcc(ons, START_INDEX);
+  AffineAccessor<vertex,1> insBufferAcc(insBuffer, VERTEX_ID);
+  AffineAccessor<size_t,1> outputsAcc(edgesGpu, OUT_VERTEX);
+  AffineAccessor<size_t,1> biiAcc(bufferInputIds, IN_VERTEX);
 
-  // Loads the vertices from ons into device memory
+  // Loads the vertices from ins into device memory
   loadInsVertices(
     verticesAcc,
     insAcc,
@@ -188,8 +201,24 @@ static void update_graph(const void *args, size_t datalen, const void *userdata,
     ins.get_indexspace<1>()
   );
 
-  log_app.print() << "Printing insBuffer";
-  printGeneralRegion<vertex>(insBuffer, VERTEX_ID);
+  log_app.print() << "initial vertices values";
+  printGeneralRegion<vertex>(vertices, VERTEX_ID);
+
+  //Runs the actual computation
+  runIteration(
+    edgesGpu.get_indexspace<1>(),
+    ons.get_indexspace<1>(),
+    insBufferAcc,
+    verticesAcc,
+    biiAcc,
+    onsAcc,
+    onsIndexAcc,
+    outputsAcc
+  );
+
+  log_app.print() << "final vertices values";
+  printGeneralRegion<vertex>(vertices, VERTEX_ID);
+
 }
 
 static void loadFakeVertices(RegionInstance region){
