@@ -58,7 +58,7 @@ __global__ void findInputEdges(size_t* buffer, size_t size){
 __host__ void generateNeighborSets(
     RegionInstance *ins,
     RegionInstance *ons,
-    RegionInstance *edges,
+    RegionInstance edges,
     IndexSpace<1> edgesSpace,
     Memory deviceMemory,
     RegionInstance *insBuffer,
@@ -66,8 +66,8 @@ __host__ void generateNeighborSets(
 )
 {
     // In refers to u in directed edge (u,v)
-    AffineAccessor<size_t,1>inAcc(*edges, IN_VERTEX);
-    AffineAccessor<size_t,1>outAcc(*edges, OUT_VERTEX);
+    AffineAccessor<size_t,1>inAcc(edges, IN_VERTEX);
+    AffineAccessor<size_t,1>outAcc(edges, OUT_VERTEX);
 
     // Make sure we can use thrust to process the values as a single buffer
     assert(inAcc.is_dense_arbitrary(edgesSpace.bounds));
@@ -134,7 +134,7 @@ __host__ void generateNeighborSets(
 
     fieldSizes.clear();
     fieldSizes[VERTEX_ID] = sizeof(vertex);
-    //Set out our ins buffer that our GPU will use for ever iteration of the algorithm
+    //Set out our ins buffer that our GPU will use for every iteration of the algorithm
     Event insBufferReadyEvent = RegionInstance::create_instance(
         *insBuffer,
         deviceMemory,
@@ -156,7 +156,8 @@ __host__ void generateNeighborSets(
     thrust::device_ptr<size_t> outPtr(outAcc.ptr(edgesSpace.bounds.lo));
     thrust::copy(outPtr, outPtr + edgesSpace.volume(), analysisBuffer.begin());
     // Use this buffer to also get inputs of the ons
-    thrust::sequence(indicesBuffer.begin(), indicesBuffer.end());
+    // TODO modify this when we scale up to multiple nodes
+    thrust::sequence(indicesBuffer.begin(), indicesBuffer.end(), (size_t)edgesSpace.bounds.lo.x);
 
     //Find the output vectors
     // TODO I shouldn't actually have to do this sort given the input
@@ -184,7 +185,7 @@ __host__ void generateNeighborSets(
     thrust::device_ptr<size_t> onsPtr(onsAcc.ptr(onsSpace.bounds.lo));
     thrust::copy(analysisBuffer.begin(), analysisBuffer.begin() + ons_size, onsPtr);
 
-    AffineAccessor<size_t,1>onsIndexAcc(*ons, OUT_VERTEX);
+    AffineAccessor<size_t,1>onsIndexAcc(*ons, START_INDEX);
     thrust::device_ptr<size_t> onsIndexPtr(onsIndexAcc.ptr(onsSpace.bounds.lo));
     thrust::copy(indicesBuffer.begin(), indicesBuffer.begin() + ons_size, onsIndexPtr);
     
@@ -258,7 +259,7 @@ __global__ void iterationKernel(
     for(size_t i = firstEdgesIndex + threadIdx.x; i < finalEdgesIndex; i += threadCount){
         computeBase(
             newVertexValues,
-            outputsAcc[i] - blockBase /* TODO most likely not the best approach to figure out output vertex*/,
+            outputsAcc[i] - outputsAcc[firstEdgesIndex] /* TODO most likely not the best approach to figure out output vertex*/,
             i,
             biiAcc,
             insBufferAcc
@@ -268,7 +269,7 @@ __global__ void iterationKernel(
 
     //Write results back to zero copy memory
     if(onsSpace.contains(tid)){
-        verticesAcc[tid] = newVertexValues[tid - blockBase];
+        verticesAcc[onsAcc[tid]] = newVertexValues[tid - blockBase];
     }
 
 }
@@ -291,6 +292,8 @@ __host__ void runIteration(
 
     int threadsPerBlock = 256;
     int numBlocks = (onsCount + threadsPerBlock - 1) / threadsPerBlock;
+    // log_app.print() << "onsSpace " << onsSpace;
+    // log_app.print() << "edgesSpace " << edgesSpace;
     iterationKernel<<<numBlocks, threadsPerBlock>>>(
         edgesSpace.bounds,
         onsSpace.bounds,
