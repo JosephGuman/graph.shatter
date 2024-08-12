@@ -10,37 +10,14 @@
 
 using namespace Realm;
 
-// This seems important
+
 #ifdef REALM_USE_HIP
 #include "hip_cuda_compat/hip_cuda.h"
 #endif
 
+
 extern Logger log_app;
 
-// TODO Make this work for all index spaces
-__device__ Point<1> indexToPoint(IndexSpace<1>& is, size_t point){
-
-    return Point<1>(point);
-}
-
-// Doubles every element
-__global__ void doubleKernel(Rect<1> is, AffineAccessor<int, 1> linear_accessor){
-    Point<1> p = blockIdx.x * blockDim.x + threadIdx.x;
-    if(is.contains(p)){
-        linear_accessor[p] += linear_accessor[p];
-        printf("%d \n", linear_accessor[p]);
-    }
-}
-
-
-__host__ void examplelauncher(Rect<1> is, AffineAccessor<int, 1> linear_accessor){
-      // Run the kernel
-    size_t threadsPerBlock = 32;
-    size_t numBlocks = (is.volume() + threadsPerBlock - 1) / threadsPerBlock;
-
-    doubleKernel<<<numBlocks, threadsPerBlock>>>(Rect<1>(0,5), linear_accessor);
-    cudaDeviceSynchronize();
-}
 
 __global__ void findInputEdges(size_t* buffer, size_t size){
     size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -54,6 +31,7 @@ __global__ void findInputEdges(size_t* buffer, size_t size){
         }
     }
 }
+
 
 __host__ void generateNeighborSets(
     RegionInstance *ins,
@@ -160,8 +138,6 @@ __host__ void generateNeighborSets(
     thrust::sequence(indicesBuffer.begin(), indicesBuffer.end(), (size_t)edgesSpace.bounds.lo.x);
 
     //Find the output vectors
-    // TODO I shouldn't actually have to do this sort given the input
-    // thrust::sort(analysisBuffer.begin(), analysisBuffer.end());
     auto unique_end = thrust::unique_by_key(analysisBuffer.begin(), analysisBuffer.end(), indicesBuffer.begin());
 
     size_t ons_size = unique_end.first - analysisBuffer.begin();
@@ -274,7 +250,7 @@ __global__ void iterationKernel(
 
 }
 
-// Presumes ownership over every  
+
 __host__ void runIteration(
     IndexSpace<1> edgesSpace /* Represents the edges with outputs represented by ons*/,
     IndexSpace<1> onsSpace,
@@ -308,6 +284,7 @@ __host__ void runIteration(
     cudaDeviceSynchronize();
 }
 
+
 __global__ void loadInsVerticesKernel(
     AffineAccessor<vertex,1> verticesAcc,
     AffineAccessor<size_t,1> insAcc,
@@ -321,6 +298,7 @@ __global__ void loadInsVerticesKernel(
         insBufferAcc[tid] = verticesAcc[insAcc[tid]];
     }
 }
+
 
 __host__ void loadInsVertices(
     AffineAccessor<vertex,1> verticesAcc,

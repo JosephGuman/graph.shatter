@@ -30,7 +30,7 @@ ALT_MAPPERS     ?= 0		# Include alternative mappers (not recommended)
 # Put the binary file name here
 OUTFILE		?= graph.shatter
 # List all the application source files here
-GEN_SRC		?= shatter.cc  # .cc files
+GEN_SRC		?= shatter.cc graph_partition.cc  utils.cc # .cc files
 GEN_GPU_SRC	?= toc_graph.cu  # .cu files
 
 # You can modify these variables, some will be appended to by the runtime makefile

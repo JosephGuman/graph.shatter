@@ -1,51 +1,10 @@
 #include "graph_shatter_types.h"
 
+
 using namespace Realm;
 
+
 Logger log_app("app");
-
-void examplelauncher(Rect<1> is, AffineAccessor<int, 1> linear_accessor);
-
-static void load_double_store(const void *args, size_t datalen, const void *userdata,
-                      size_t userlen, Processor p){
-  const LDSArgs &gpuArgs = *reinterpret_cast<const LDSArgs *>(args);
-
-  // Create instance in GPU device memory
-  Memory gpuMem = Machine::MemoryQuery(Machine::get_machine())
-      .has_capacity(gpuArgs.is.volume() * sizeof(int))
-      .best_affinity_to(p)
-      .first();
-  std::map<FieldID, size_t> fieldSizes;
-    fieldSizes[1] = sizeof(int);
-  RegionInstance deviceInstance;
-  Event deviceInstanceE = RegionInstance::create_instance(
-    deviceInstance,
-    gpuMem,
-    gpuArgs.is,
-    fieldSizes,
-    0,
-    ProfilingRequestSet(),
-    Event::NO_EVENT
-  );
-
-  // Load data into logical instance
-  std::vector<CopySrcDstField> src(1);
-  std::vector<CopySrcDstField> dst(1);
-  src[0].set_field(gpuArgs.data, 1, sizeof(int));
-  dst[0].set_field(deviceInstance, 1, sizeof(int));
-  gpuArgs.is.copy(src, dst, ProfilingRequestSet(), deviceInstanceE).wait();
-
-  //Launch 
-  AffineAccessor<int,1> acc(deviceInstance, 1);
-  examplelauncher(Rect<1>(0,5), acc);
-
-  //Load data back into CPU memory
-  src[0].set_field(deviceInstance, 1, sizeof(int));
-  dst[0].set_field(gpuArgs.data, 1, sizeof(int));
-  gpuArgs.is.copy(src, dst, ProfilingRequestSet()).wait();
-
-
-}
 
 
 void generateNeighborSets(
@@ -58,12 +17,14 @@ void generateNeighborSets(
   RegionInstance *bufferInputIds
 );
 
+
 void loadInsVertices(
   AffineAccessor<vertex,1> verticesAcc,
   AffineAccessor<size_t,1> insAcc,
   AffineAccessor<vertex,1> insBufferAcc,
   IndexSpace<1> insSpace
 );
+
 
 void runIteration(
   IndexSpace<1> edgesSpace,
@@ -76,15 +37,6 @@ void runIteration(
   AffineAccessor<size_t,1> outputsAcc
 );
 
-template<typename T>
-void printGeneralRegion(RegionInstance region, FieldID id){
-  GenericAccessor<T,1> acc(region, id);
-  for(IndexSpaceIterator<1>i(region.get_indexspace<1>()); i.valid; i.step()){
-    for (PointInRectIterator<1> j(i.rect); j.valid; j.step()) {
-      log_app.print() << acc.read(j.p);
-    }
-  }
-};
 
 //Loads edges, ons, and ins on gpu
 static void prepare_graph(const void *args, size_t datalen, const void *userdata,
@@ -107,6 +59,7 @@ static void prepare_graph(const void *args, size_t datalen, const void *userdata
     prepareGraphArgs.bufferInputIds
   );
 
+  // Kep this around in preparation for TODOs in generateNeighborSets
   //Now that we have generate out ins and ons set let's see what we got
   /*
   GenericAccessor<size_t,1> insAcc(*prepareGraphArgs.ins, IN_VERTEX);
@@ -148,6 +101,7 @@ static void prepare_graph(const void *args, size_t datalen, const void *userdata
   */
 }
 
+
 // Loads ins set into device memory for pull model
 static void load_graph(const void *args, size_t datalen, const void *userdata,
                       size_t userlen, Processor p)
@@ -170,6 +124,7 @@ static void load_graph(const void *args, size_t datalen, const void *userdata,
     ins.get_indexspace<1>()
   );
 }
+
 
 static void update_graph(const void *args, size_t datalen, const void *userdata,
                       size_t userlen, Processor p)
@@ -205,6 +160,7 @@ static void update_graph(const void *args, size_t datalen, const void *userdata,
 
 }
 
+
 static void loadFakeVertices(RegionInstance region){
   AffineAccessor<vertex,1> acc(region, VERTEX_ID);
   IndexSpace<1> space = region.get_indexspace<1>();
@@ -218,6 +174,7 @@ static void loadFakeVertices(RegionInstance region){
     }
   }
 }
+
 
 static void loadFakeEdges(RegionInstance region, RegionInstance edgeBoundaries){
   AffineAccessor<size_t,1> inAcc(region, IN_VERTEX);
@@ -243,8 +200,7 @@ static void loadFakeEdges(RegionInstance region, RegionInstance edgeBoundaries){
   }
 }
 
-// This is the main task entry point that will initialize and coordinate all the various
-// tasks we have.
+
 static void main_task(const void *args, size_t datalen, const void *userdata,
                       size_t userlen, Processor p)
 {
@@ -395,6 +351,7 @@ static void main_task(const void *args, size_t datalen, const void *userdata,
   Runtime::get_runtime().shutdown(totalIterateEvent, 0 /*success*/);
 }
 
+
 int main(int argc, char **argv)
 {
   Runtime rt;
@@ -405,9 +362,6 @@ int main(int argc, char **argv)
   {
     Processor::register_task_by_kind(Processor::LOC_PROC, false /*!global*/, MAIN_TASK,
                                     CodeDescriptor(main_task), ProfilingRequestSet(), 0, 0)
-        .wait();
-    Processor::register_task_by_kind(Processor::TOC_PROC, false /*!global*/, LOAD_DOUBLE_STORE,
-                                    CodeDescriptor(load_double_store), ProfilingRequestSet(), 0, 0)
         .wait();
     Processor::register_task_by_kind(Processor::TOC_PROC, false /*!global*/, PREPARE_GRAPH,
                                     CodeDescriptor(prepare_graph), ProfilingRequestSet(), 0, 0)
@@ -427,61 +381,3 @@ int main(int argc, char **argv)
 
   return rt.wait_for_shutdown();
 }
-
-namespace GraphShatter{
-
-template<typename T>
-Ptable<T>::Ptable(IndexSpace<1> space, Processor p) {
-  // Get system memory on the processor
-  Machine::MemoryQuery mq(Machine::get_machine());
-  mq.only_kind(Memory::SYSTEM_MEM)
-      .has_capacity(sizeof(T) * space.volume())
-      .best_affinity_to(p);
-  
-  if(mq.begin() == mq.end()){
-      log_app.error() << "Not enough space in proc " << p << " to back Ltable";
-  }
-
-  std::map<FieldID, size_t> field_sizes;
-  field_sizes[fid] = sizeof(T);
-  Event e = RegionInstance::create_instance(
-      data,
-      *mq.begin(),
-      space,
-      field_sizes,
-      0,
-      ProfilingRequestSet()
-  );
-
-  // For now just wait
-  e.wait();
-
-  accessor = AffineAccessor<T,1>(data, fid);
-  // AffineAccessor<T, 1, int> accessor(data, fid);
-};
-
-template<typename T>
-Ptable<T>::~Ptable(){
-  data.destroy();
-}
-
-template<typename T>
-Event Ptable<T>::fill(T value, Event prior){
-  std::vector<CopySrcDstField> dsts(1);
-  dsts[0].set_field(data, fid, sizeof(T));
-  return data.get_indexspace<1>().fill(
-      dsts,
-      ProfilingRequestSet(),
-      &value,
-      sizeof(T),
-      prior);
-};
-
-template<typename T>
-T Ptable<T>::read_concurrent(Point<1> p, Event prior){
-  prior.wait();
-  return accessor[p];
-};
-
-}
-
