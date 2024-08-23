@@ -1,5 +1,3 @@
-#include "graph_shatter_types.h"
-
 template<typename T>
 void printGeneralRegion(RegionInstance region, FieldID id){
   GenericAccessor<T,1> acc(region, id);

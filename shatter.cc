@@ -1,5 +1,5 @@
 #include "graph_shatter_types.h"
-
+#include "utils.cc"
 
 using namespace Realm;
 
@@ -37,6 +37,8 @@ void runIteration(
   AffineAccessor<size_t,1> outputsAcc
 );
 
+void writeHardCoded(std::string fileName);
+GraphRegions readGraphFromFile(std::string fileName);
 
 //Loads edges, ons, and ins on gpu
 static void prepare_graph(const void *args, size_t datalen, const void *userdata,
@@ -161,113 +163,16 @@ static void update_graph(const void *args, size_t datalen, const void *userdata,
 }
 
 
-static void loadFakeVertices(RegionInstance region){
-  AffineAccessor<vertex,1> acc(region, VERTEX_ID);
-  IndexSpace<1> space = region.get_indexspace<1>();
-  
-  //Needleslly convoluted to pretend its general
-  std::vector<int> toFill = {0,1,2,3,4};
-  int index = 0;
-  for(IndexSpaceIterator<1>i(space); i.valid; i.step()){
-    for (PointInRectIterator<1> j(i.rect); j.valid; j.step()) {
-      acc[j.p].value = toFill[index++];
-    }
-  }
-}
-
-
-static void loadFakeEdges(RegionInstance region, RegionInstance edgeBoundaries){
-  AffineAccessor<size_t,1> inAcc(region, IN_VERTEX);
-  AffineAccessor<size_t,1> outAcc(region, OUT_VERTEX);
-  IndexSpace<1> space = region.get_indexspace<1>();
-  
-  std::vector<int> inFill = {2,4,0,3,4,0,4};
-  std::vector<int> outFill = {0,0,1,1,2,3,3};
-  int index = 0;
-  for(IndexSpaceIterator<1>i(space); i.valid; i.step()){
-    for (PointInRectIterator<1> j(i.rect); j.valid; j.step()) {
-      inAcc[j.p] = inFill[index];
-      outAcc[j.p] = outFill[index++];
-    }
-  }
-
-  // Fill in the edge boundaries
-  // Just hardprogram this because it will be obvious for our file inputs
-  std::vector<int> boundaryVector = {0,2,4,5};
-  AffineAccessor<size_t,1> boundaryAcc(edgeBoundaries, OUT_VERTEX);
-  for(uint i = 0; i < boundaryVector.size(); i++){
-    boundaryAcc[i] = boundaryVector[i];
-  }
-}
-
-
 static void main_task(const void *args, size_t datalen, const void *userdata,
                       size_t userlen, Processor p)
 {
-  //Get our initial fake vertices
-  //TODO get a distributed file system to load in real graph data
-  int vertexCount = 5;
-  int edgeCount = 7;
-  int outEdgeCount = 4;
-  IndexSpace<1> vertexSpace(Rect<1>(0,vertexCount - 1));
-  IndexSpace<1> edgeSpace(Rect<1>(0,edgeCount - 1));
-  IndexSpace<1> boundariesSpace(Rect<1>(0,outEdgeCount - 1));
+  std::string data_file = "data_files/exampleload.bin";
+  writeHardCoded(data_file);
+  GraphRegions graphRegions = readGraphFromFile(data_file);
 
-  //Get memory to put graph onto zero copy/ best affinity memory for our initial ground truth
-  Machine::MemoryQuery mq(Machine::get_machine());
-  Memory nodeMemory = mq.only_kind(Memory::SYSTEM_MEM)
-    .has_capacity(sizeof(vertex) * (vertexCount + 2 * sizeof(size_t)))
-    .best_affinity_to(p).first();
-
-  //Put our graph on node memory
-  //TODO track effect of memory layout
-  RegionInstance vertices;
-  std::map<FieldID, size_t> fieldSizes;
-  fieldSizes[VERTEX_ID] = sizeof(vertex);
-  Event verticesEvent = RegionInstance::create_instance(
-      vertices,
-      nodeMemory,
-      vertexSpace,
-      fieldSizes,
-      0,
-      ProfilingRequestSet()
-  );
-  fieldSizes.clear();
-
-  RegionInstance edges;
-  fieldSizes[IN_VERTEX] = sizeof(size_t);
-  fieldSizes[OUT_VERTEX] = sizeof(size_t);
-  Event edgesEvent = RegionInstance::create_instance(
-    edges,
-    nodeMemory,
-    edgeSpace,
-    fieldSizes,
-    0,
-    ProfilingRequestSet()
-  );
-  fieldSizes.clear();
-
-  RegionInstance edgeBoundaries;
-  fieldSizes[OUT_VERTEX] = sizeof(size_t);
-  Event boundariesEvent = RegionInstance::create_instance(
-    edgeBoundaries,
-    nodeMemory,
-    boundariesSpace,
-    fieldSizes,
-    0,
-    ProfilingRequestSet()
-  );
-
-
-  Event graphReadyEvent = Event::merge_events(
-    verticesEvent,
-    edgesEvent,
-    boundariesEvent
-  );
-
-  graphReadyEvent.wait();
-  loadFakeVertices(vertices);
-  loadFakeEdges(edges, edgeBoundaries);
+  RegionInstance vertices = graphRegions.vertices;
+  RegionInstance edges = graphRegions.edges;
+  RegionInstance edgeBoundaries = graphRegions.edgeBoundaries;
 
   //TODO deploy across multiple GPUs.
   std::vector<Processor> availableGpuProcs = GraphPartition::getDefaultNodeGpus();
@@ -292,9 +197,8 @@ static void main_task(const void *args, size_t datalen, const void *userdata,
       PREPARE_GRAPH, 
       &prepareGraphArgs[partitionPoint.p], 
       sizeof(PrepareGraphArgs), 
-      graphReadyEvent
+      Event::NO_EVENT
     );
-
   }
 
   //Wait until each GPU has finished its shard's processing
@@ -339,8 +243,6 @@ static void main_task(const void *args, size_t datalen, const void *userdata,
       sizeof(updateGraphArgs),
       Event::NO_EVENT
     );
-
-    // continue;
   }
 
   Event totalIterateEvent = Event::merge_events(graphIterateEvents);

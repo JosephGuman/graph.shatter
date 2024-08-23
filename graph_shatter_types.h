@@ -98,5 +98,11 @@ struct UpdateGraphArgs{
   RegionInstance *bufferInputIds;
 };
 
+struct GraphRegions{
+  RegionInstance vertices;
+  RegionInstance edges;
+  RegionInstance edgeBoundaries;
+};
+
 template<typename T>
 void printGeneralRegion(RegionInstance region, FieldID id);
