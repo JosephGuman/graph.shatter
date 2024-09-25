@@ -41,6 +41,11 @@ struct vertex{
   }
 };
 
+struct PartitionChild{
+  RegionInstance data;
+  const RegionInstance boundaries;
+  Memory memory;
+};
 
 /*
 * A representation of a RegionInstance partition on a single node
@@ -49,10 +54,12 @@ class GraphPartition{
   RegionInstance parent;
   RegionInstance boundaries;
   AffineAccessor<size_t,1> boundariesAcc;
-  std::vector<RegionInstance> children;
-  std::vector<Memory> childrenMemories;
-  std::vector<Processor> processors;
   Rect<1> colorSpace;
+  std::vector<RegionInstance> children;
+  std::vector<RegionInstance> childrenBoundaries;
+  std::vector<Memory> childrenMemories;
+  std::vector<bool> valid;
+  std::vector<Processor> processors;
 
   public:
   GraphPartition(
@@ -63,9 +70,9 @@ class GraphPartition{
   );
   
   // Return region instance on corresponding processor
-  std::pair<RegionInstance, Memory> getChild(Point<1> p);
+  PartitionChild getChild(Point<1> p);
   Processor getProc(Point<1> p);
-  IndexSpace<1> getSubSpace(Point<1> p);
+  std::pair<IndexSpace<1>, IndexSpace<1>> getSubSpace(Point<1> p);
 
   static std::vector<Processor> getDefaultNodeGpus();
 };
@@ -74,11 +81,8 @@ class GraphPartition{
 // TODO add a layer of extraction when expanding to multiple nodes
 struct PrepareGraphArgs{
   GraphPartition *graphPartition; // partition over edges
-  // RegionInstance edgesGpu;
-  // Memory deviceMemory;
   Point<1> partitionColor; // color for that GPU processor
   RegionInstance *ins;
-  RegionInstance *ons;
   RegionInstance *insBuffer;
   RegionInstance *bufferInputIds;
 };
@@ -92,8 +96,7 @@ struct LoadGraphArgs{
 struct UpdateGraphArgs{
   GraphPartition *graphPartition; // partition over edges
   Point<1> partitionColor; // color for that GPU processor
-  RegionInstance vertices;
-  RegionInstance *ons;
+  RegionInstance vertices; // zero copy store of the buffers 
   RegionInstance *insBuffer;
   RegionInstance *bufferInputIds;
 };

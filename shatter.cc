@@ -9,7 +9,6 @@ Logger log_app("app");
 
 void generateNeighborSets(
   RegionInstance *ins,
-  RegionInstance *ons,
   RegionInstance edges,
   IndexSpace<1> edgesSpace,
   Memory deviceMemory,
@@ -28,13 +27,11 @@ void loadInsVertices(
 
 void runIteration(
   IndexSpace<1> edgesSpace,
-  IndexSpace<1> onsSpace,
+  IndexSpace<1> boundariesSpace,
   AffineAccessor<vertex,1> insBufferAcc,
   AffineAccessor<vertex,1> verticesAcc,
   AffineAccessor<size_t,1> biiAcc,
-  AffineAccessor<size_t,1> onsAcc,
-  AffineAccessor<size_t,1> onsIndexAcc,
-  AffineAccessor<size_t,1> outputsAcc
+  AffineAccessor<size_t,1> boundariesAcc
 );
 
 void writeHardCoded(std::string fileName);
@@ -45,16 +42,14 @@ static void prepare_graph(const void *args, size_t datalen, const void *userdata
                       size_t userlen, Processor p)
 {
   PrepareGraphArgs &prepareGraphArgs = *reinterpret_cast<PrepareGraphArgs *>(const_cast<void*>(args));
-  std::pair<RegionInstance, Memory> temp = prepareGraphArgs.graphPartition->getChild(prepareGraphArgs.partitionColor);
-  Memory deviceMemory = temp.second;
+  PartitionChild partitionData = prepareGraphArgs.graphPartition->getChild(prepareGraphArgs.partitionColor);
+  RegionInstance deviceData = partitionData.data;
+  Memory deviceMemory = partitionData.memory;
 
-  GenericAccessor<size_t,1> testAcc(temp.first, OUT_VERTEX);
-
-  IndexSpace<1> edgesSpace = temp.first.get_indexspace<1>();
+  IndexSpace<1> edgesSpace = deviceData.get_indexspace<1>();
   generateNeighborSets(
     prepareGraphArgs.ins,
-    prepareGraphArgs.ons,
-    temp.first,
+    deviceData,
     edgesSpace,
     deviceMemory,
     prepareGraphArgs.insBuffer,
@@ -133,33 +128,26 @@ static void update_graph(const void *args, size_t datalen, const void *userdata,
 {
   UpdateGraphArgs &updateGraphArgs = *reinterpret_cast<UpdateGraphArgs *>(const_cast<void*>(args));
   RegionInstance vertices = updateGraphArgs.vertices;
-  RegionInstance edgesGpu = updateGraphArgs.graphPartition->getChild(updateGraphArgs.partitionColor).first;
-  RegionInstance ons = *updateGraphArgs.ons;
+  PartitionChild temp = updateGraphArgs.graphPartition->getChild(updateGraphArgs.partitionColor);
+  RegionInstance edgesGpu = temp.data;
+  RegionInstance boundariesGpu = temp.boundaries;
   RegionInstance insBuffer = *updateGraphArgs.insBuffer;
   RegionInstance bufferInputIds = *updateGraphArgs.bufferInputIds;
 
   AffineAccessor<vertex,1> verticesAcc(vertices, VERTEX_ID);
-  AffineAccessor<size_t,1> onsAcc(ons, OUT_VERTEX);
-  AffineAccessor<size_t,1> onsIndexAcc(ons, START_INDEX);
   AffineAccessor<vertex,1> insBufferAcc(insBuffer, VERTEX_ID);
-  AffineAccessor<size_t,1> outputsAcc(edgesGpu, OUT_VERTEX);
   AffineAccessor<size_t,1> biiAcc(bufferInputIds, IN_VERTEX);
+  AffineAccessor<size_t,1> boundariesAcc(boundariesGpu, OUT_VERTEX);
 
   //Runs the actual computation
   runIteration(
     edgesGpu.get_indexspace<1>(),
-    ons.get_indexspace<1>(),
+    boundariesGpu.get_indexspace<1>(),
     insBufferAcc,
     verticesAcc,
     biiAcc,
-    onsAcc,
-    onsIndexAcc,
-    outputsAcc
+    boundariesAcc
   );
-
-  // log_app.print() << "final vertices values";
-  // printGeneralRegion<vertex>(vertices, VERTEX_ID);
-
 }
 
 
@@ -177,23 +165,22 @@ static void main_task(const void *args, size_t datalen, const void *userdata,
   //TODO deploy across multiple GPUs.
   std::vector<Processor> availableGpuProcs = GraphPartition::getDefaultNodeGpus();
   Rect<1> partitionSpace(0, availableGpuProcs.size() - 1);
-  GraphPartition baseNodePartition(edges, partitionSpace, availableGpuProcs, edgeBoundaries);
+  GraphPartition* baseNodePartition = new GraphPartition(edges, partitionSpace, availableGpuProcs, edgeBoundaries);
 
   std::vector<PrepareGraphArgs> prepareGraphArgs;
   std::vector<Event> graphReadyEvents(partitionSpace.volume());
   for(PointInRectIterator<1> partitionPoint(partitionSpace); partitionPoint.valid; partitionPoint.step()){
     // Get the in-neighbor and out-neighbor set for our single GPU
     prepareGraphArgs.push_back({
-      &baseNodePartition,
+      baseNodePartition,
       partitionPoint.p,
-      new RegionInstance,
       new RegionInstance,
       new RegionInstance,
       new RegionInstance
     });
 
     // Recall PREPARE_GRAPH must be run on the same address space
-    graphReadyEvents[partitionPoint.p] = baseNodePartition.getProc(partitionPoint.p).spawn(
+    graphReadyEvents[partitionPoint.p] = baseNodePartition->getProc(partitionPoint.p).spawn(
       PREPARE_GRAPH, 
       &prepareGraphArgs[partitionPoint.p], 
       sizeof(PrepareGraphArgs), 
@@ -213,7 +200,7 @@ static void main_task(const void *args, size_t datalen, const void *userdata,
       *prepareGraphArgs[partitionPoint.p].insBuffer
     };
 
-    graphLoadEvents[partitionPoint.p] = baseNodePartition.getProc(partitionPoint.p).spawn(
+    graphLoadEvents[partitionPoint.p] = baseNodePartition->getProc(partitionPoint.p).spawn(
       LOAD_GRAPH,
       &loadGraphArgs,
       sizeof(loadGraphArgs),
@@ -228,16 +215,15 @@ static void main_task(const void *args, size_t datalen, const void *userdata,
   for(PointInRectIterator<1> partitionPoint(partitionSpace); partitionPoint.valid; partitionPoint.step()){
     //Run a single iteration of our algorithm
     UpdateGraphArgs updateGraphArgs = {
-      &baseNodePartition,
+      baseNodePartition,
       partitionPoint.p,
       vertices,
-      prepareGraphArgs[partitionPoint.p].ons,
       prepareGraphArgs[partitionPoint.p].insBuffer,
       prepareGraphArgs[partitionPoint.p].bufferInputIds
     };
 
     // TODO modify Event logic for multiple iterations
-    graphIterateEvents[partitionPoint.p] = baseNodePartition.getProc(partitionPoint.p).spawn(
+    graphIterateEvents[partitionPoint.p] = baseNodePartition->getProc(partitionPoint.p).spawn(
       UPDATE_GRAPH,
       &updateGraphArgs,
       sizeof(updateGraphArgs),

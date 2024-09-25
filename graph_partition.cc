@@ -2,30 +2,28 @@
 
 
 GraphPartition::GraphPartition(
-RegionInstance pa,
-Rect<1> cS,
-std::vector<Processor> procs,
-RegionInstance bo
+    RegionInstance pa,
+    Rect<1> cS,
+    std::vector<Processor> procs,
+    RegionInstance bo
 ) : 
     parent(pa),
     boundaries(bo),
     boundariesAcc(boundaries, OUT_VERTEX),
+    colorSpace(cS),
     children(colorSpace.volume()),
+    childrenBoundaries(colorSpace.volume()),
     childrenMemories(colorSpace.volume()),
-    processors(procs),
-    colorSpace(cS)
+    valid(colorSpace.volume(), false),
+    processors(procs)
 {}
 
-std::pair<RegionInstance, Memory> GraphPartition::getChild(Point<1> p){
+PartitionChild GraphPartition::getChild(Point<1> p){
     assert(colorSpace.contains(p));
 
-    if(children[p].exists()){
-        return {children[p], childrenMemories[p]};
+    if(valid[0]){
+        return {children[p], childrenBoundaries[p], childrenMemories[p]};
     }
-
-    std::map<FieldID, size_t> fieldSizes;
-    fieldSizes[IN_VERTEX] = sizeof(size_t);
-    fieldSizes[OUT_VERTEX] = sizeof(size_t);
 
     Memory deviceMemory = Machine::MemoryQuery(Machine::get_machine())
         .has_capacity(1 /*TODO make this a real memory check*/)
@@ -33,8 +31,13 @@ std::pair<RegionInstance, Memory> GraphPartition::getChild(Point<1> p){
         .first();
 
     childrenMemories[p] = deviceMemory;
-    IndexSpace<1> childSpace = getSubSpace(p);
 
+    std::pair<IndexSpace<1>, IndexSpace<1>> childSpaces = getSubSpace(p);
+    IndexSpace<1> childSpace = childSpaces.first;
+    IndexSpace<1> boundarySpace = childSpaces.second;
+
+    std::map<FieldID, size_t> fieldSizes;
+    fieldSizes[IN_VERTEX] = sizeof(size_t);
     Event childRegionEvent = RegionInstance::create_instance(
         children[p],
         deviceMemory,
@@ -43,18 +46,40 @@ std::pair<RegionInstance, Memory> GraphPartition::getChild(Point<1> p){
         0,
         ProfilingRequestSet()
     );
+    fieldSizes.clear();
 
-    std::vector<CopySrcDstField> srcs(2), dsts(2);
+    fieldSizes[OUT_VERTEX] = sizeof(size_t);
+    Event boundaryRegionEvent = RegionInstance::create_instance(
+        childrenBoundaries[p],
+        deviceMemory,
+        boundarySpace,
+        fieldSizes,
+        0,
+        ProfilingRequestSet()
+    );
+
+    std::vector<CopySrcDstField> srcs(1), dsts(1);
     srcs[0].set_field(parent, IN_VERTEX, sizeof(size_t));
     dsts[0].set_field(children[p], IN_VERTEX, sizeof(size_t));
-    srcs[1].set_field(parent, OUT_VERTEX, sizeof(size_t));
-    dsts[1].set_field(children[p], OUT_VERTEX, sizeof(size_t));
-    // TODO I'm not sure if this is important
     Event metadataFetch = parent.fetch_metadata(getProc(p));
-    // TODO do I really want to hang here?
-    childSpace.copy(srcs, dsts, ProfilingRequestSet(), Event::merge_events(childRegionEvent, metadataFetch)).wait();
 
-    return {children[p], childrenMemories[p]};
+    std::vector<CopySrcDstField> boundarysrcs(1), boundarydsts(1);
+    boundarysrcs[0].set_field(boundaries, OUT_VERTEX, sizeof(size_t));
+    boundarydsts[0].set_field(childrenBoundaries[p], OUT_VERTEX, sizeof(size_t));
+    Event boundaryMetadataFetch = boundaries.fetch_metadata(getProc(p));
+
+    Event dataTransferEvent = childSpace.copy(srcs, dsts, ProfilingRequestSet(), Event::merge_events(childRegionEvent, metadataFetch));
+    Event boundaryTransferEvent = boundarySpace.copy(
+        boundarysrcs,
+        boundarydsts,
+        ProfilingRequestSet(),
+        Event::merge_events(boundaryRegionEvent, boundaryMetadataFetch)
+    );
+
+    Event::merge_events(dataTransferEvent, boundaryTransferEvent).wait();
+
+    valid[p] = true;
+    return {children[p], childrenBoundaries[p], childrenMemories[p]};
 }
 
 Processor GraphPartition::getProc(Point<1> p){
@@ -64,25 +89,28 @@ Processor GraphPartition::getProc(Point<1> p){
 
 // TODO create general programmatically and manually defined partitions
 // For now we are just doing the most basic partitioning strategy
-IndexSpace<1> GraphPartition::getSubSpace(Point<1> p){
+std::pair<IndexSpace<1>, IndexSpace<1>> GraphPartition::getSubSpace(Point<1> p){
     assert(colorSpace.contains(p));
+
     IndexSpace<1> boundarySpace = boundaries.get_indexspace<1>();
     assert(boundarySpace.dense());
-    size_t boundaryVolume = boundarySpace.volume();
+    Rect<1> selectionSpace(boundarySpace.bounds.lo, boundarySpace.bounds.hi - 1);
+
+    size_t boundaryVolume = selectionSpace.volume();
     size_t baseWidth = (boundaryVolume + colorSpace.volume() - 1) / colorSpace.volume();
 
     //The bounds for where we look within boundaries to find the actual bounds for parent
     Point<1> lowerBound = p * baseWidth;
-    Point<1> upperBound = std::min((size_t) boundarySpace.bounds.hi, lowerBound + baseWidth - 1);
+    Point<1> upperBound = std::min((size_t) selectionSpace.hi + 1, lowerBound + baseWidth);
 
-    size_t maxBound = lowerBound + baseWidth - 1;
-    if(maxBound < (size_t) boundarySpace.bounds.hi){
-        return IndexSpace<1>(Rect<1>(boundariesAcc[lowerBound], boundariesAcc[upperBound + 1] - 1));
-    }
-    return IndexSpace<1>(Rect<1>(boundariesAcc[lowerBound], parent.get_indexspace<1>().bounds.hi));
-    }
+    // TODO make sure geometrically impossible Rects do not cause problems
+    IndexSpace<1> childBoundarySpace = {Rect<1>(lowerBound, upperBound)};
+    IndexSpace<1> childDataSpace =  {Rect<1>(boundariesAcc[lowerBound], boundariesAcc[upperBound] - 1)};
 
-    std::vector<Processor> GraphPartition::getDefaultNodeGpus(){
+    return {childDataSpace, childBoundarySpace};
+}
+
+std::vector<Processor> GraphPartition::getDefaultNodeGpus(){
     //Find available processors on this node
     std::vector<Processor> availableGpuProcs;
     Machine::ProcessorQuery gpuProcquery = Machine::ProcessorQuery(Machine::get_machine())

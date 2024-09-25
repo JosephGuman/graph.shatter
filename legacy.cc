@@ -187,3 +187,114 @@ class Ltable{
 
 
 }
+
+
+void legacy_graph_building(){
+  //Get our initial fake vertices
+  //TODO get a distributed file system to load in real graph data
+  // int vertexCount = 5;
+  // int edgeCount = 7;
+  // int outEdgeCount = 4;
+  // IndexSpace<1> vertexSpace(Rect<1>(0,vertexCount - 1));
+  // IndexSpace<1> edgeSpace(Rect<1>(0,edgeCount - 1));
+  // IndexSpace<1> boundariesSpace(Rect<1>(0,outEdgeCount - 1));
+
+  // //Get memory to put graph onto zero copy/ best affinity memory for our initial ground truth
+  // Machine::MemoryQuery mq(Machine::get_machine());
+  // Memory nodeMemory = mq.only_kind(Memory::SYSTEM_MEM)
+  //   .has_capacity(sizeof(vertex) * (vertexCount + 2 * sizeof(size_t)))
+  //   .best_affinity_to(p).first();
+
+  // //Put our graph on node memory
+  // //TODO track effect of memory layout
+  // RegionInstance vertices;
+  // std::map<FieldID, size_t> fieldSizes;
+  // fieldSizes[VERTEX_ID] = sizeof(vertex);
+  // Event verticesEvent = RegionInstance::create_instance(
+  //     vertices,
+  //     nodeMemory,
+  //     vertexSpace,
+  //     fieldSizes,
+  //     0,
+  //     ProfilingRequestSet()
+  // );
+  // fieldSizes.clear();
+
+  // RegionInstance edges;
+  // fieldSizes[IN_VERTEX] = sizeof(size_t);
+  // fieldSizes[OUT_VERTEX] = sizeof(size_t);
+  // Event edgesEvent = RegionInstance::create_instance(
+  //   edges,
+  //   nodeMemory,
+  //   edgeSpace,
+  //   fieldSizes,
+  //   0,
+  //   ProfilingRequestSet()
+  // );
+  // fieldSizes.clear();
+
+  // RegionInstance edgeBoundaries;
+  // fieldSizes[OUT_VERTEX] = sizeof(size_t);
+  // Event boundariesEvent = RegionInstance::create_instance(
+  //   edgeBoundaries,
+  //   nodeMemory,
+  //   boundariesSpace,
+  //   fieldSizes,
+  //   0,
+  //   ProfilingRequestSet()
+  // );
+
+
+  // Event graphReadyEvent = Event::merge_events(
+  //   verticesEvent,
+  //   edgesEvent,
+  //   boundariesEvent
+  // );
+
+  // graphReadyEvent.wait();
+  // loadFakeVertices(vertices);
+  // loadFakeEdges(edges, edgeBoundaries);
+}
+
+void legacy_ons_analysis(){
+  // //Begin ons analysis
+  // assert(outAcc.is_dense_arbitrary(edgesSpace.bounds));
+  // thrust::device_ptr<size_t> outPtr(outAcc.ptr(edgesSpace.bounds.lo));
+  // thrust::copy(outPtr, outPtr + edgesSpace.volume(), analysisBuffer.begin());
+  // // Use this buffer to also get inputs of the ons
+  // // TODO modify this when we scale up to multiple nodes
+  // thrust::sequence(indicesBuffer.begin(), indicesBuffer.end(), (size_t)edgesSpace.bounds.lo.x);
+
+  // //Find the output vectors
+  // auto unique_end = thrust::unique_by_key(analysisBuffer.begin(), analysisBuffer.end(), indicesBuffer.begin());
+
+  // size_t ons_size = unique_end.first - analysisBuffer.begin();
+  // IndexSpace<1> onsSpace(Rect<1>(0,ons_size - 1));
+
+  // //Build the INS set and moves in data
+  // fieldSizes.clear();
+  // fieldSizes[OUT_VERTEX] = sizeof(size_t);
+  // fieldSizes[START_INDEX] = sizeof(size_t);
+  // // Just waiting on event might lower throughput but I'm trying to reuse the buffer
+  // RegionInstance::create_instance(
+  //     *ons,
+  //     deviceMemory,
+  //     onsSpace,
+  //     fieldSizes,
+  //     0,
+  //     ProfilingRequestSet()
+  // ).wait();
+
+  // AffineAccessor<size_t,1>onsAcc(*ons, OUT_VERTEX);
+  // thrust::device_ptr<size_t> onsPtr(onsAcc.ptr(onsSpace.bounds.lo));
+  // thrust::copy(analysisBuffer.begin(), analysisBuffer.begin() + ons_size, onsPtr);
+
+  // AffineAccessor<size_t,1>onsIndexAcc(*ons, START_INDEX);
+  // thrust::device_ptr<size_t> onsIndexPtr(onsIndexAcc.ptr(onsSpace.bounds.lo));
+  // thrust::copy(indicesBuffer.begin(), indicesBuffer.begin() + ons_size, onsIndexPtr);
+  
+  // insBufferReadyEvent.wait();
+  // cudaDeviceSynchronize();
+  // It seems device_vectors automatically deallocate memory
+  // analysisBuffer.clear();
+}

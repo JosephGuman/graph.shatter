@@ -35,7 +35,6 @@ __global__ void findInputEdges(size_t* buffer, size_t size){
 
 __host__ void generateNeighborSets(
     RegionInstance *ins,
-    RegionInstance *ons,
     RegionInstance edges,
     IndexSpace<1> edgesSpace,
     Memory deviceMemory,
@@ -45,7 +44,6 @@ __host__ void generateNeighborSets(
 {
     // In refers to u in directed edge (u,v)
     AffineAccessor<size_t,1>inAcc(edges, IN_VERTEX);
-    AffineAccessor<size_t,1>outAcc(edges, OUT_VERTEX);
 
     // Make sure we can use thrust to process the values as a single buffer
     assert(inAcc.is_dense_arbitrary(edgesSpace.bounds));
@@ -129,46 +127,10 @@ __host__ void generateNeighborSets(
     thrust::device_ptr<size_t> insPtr(insAcc.ptr(insSpace.bounds.lo));
     thrust::copy(insAnalysis.begin(), insAnalysis.begin() + ins_size, insPtr);
 
-    //Begin ons analysis
-    assert(outAcc.is_dense_arbitrary(edgesSpace.bounds));
-    thrust::device_ptr<size_t> outPtr(outAcc.ptr(edgesSpace.bounds.lo));
-    thrust::copy(outPtr, outPtr + edgesSpace.volume(), analysisBuffer.begin());
-    // Use this buffer to also get inputs of the ons
-    // TODO modify this when we scale up to multiple nodes
-    thrust::sequence(indicesBuffer.begin(), indicesBuffer.end(), (size_t)edgesSpace.bounds.lo.x);
 
-    //Find the output vectors
-    auto unique_end = thrust::unique_by_key(analysisBuffer.begin(), analysisBuffer.end(), indicesBuffer.begin());
-
-    size_t ons_size = unique_end.first - analysisBuffer.begin();
-    IndexSpace<1> onsSpace(Rect<1>(0,ons_size - 1));
-
-    //Build the INS set and moves in data
-    fieldSizes.clear();
-    fieldSizes[OUT_VERTEX] = sizeof(size_t);
-    fieldSizes[START_INDEX] = sizeof(size_t);
-    // Just waiting on event might lower throughput but I'm trying to reuse the buffer
-    RegionInstance::create_instance(
-        *ons,
-        deviceMemory,
-        onsSpace,
-        fieldSizes,
-        0,
-        ProfilingRequestSet()
-    ).wait();
-
-    AffineAccessor<size_t,1>onsAcc(*ons, OUT_VERTEX);
-    thrust::device_ptr<size_t> onsPtr(onsAcc.ptr(onsSpace.bounds.lo));
-    thrust::copy(analysisBuffer.begin(), analysisBuffer.begin() + ons_size, onsPtr);
-
-    AffineAccessor<size_t,1>onsIndexAcc(*ons, START_INDEX);
-    thrust::device_ptr<size_t> onsIndexPtr(onsIndexAcc.ptr(onsSpace.bounds.lo));
-    thrust::copy(indicesBuffer.begin(), indicesBuffer.begin() + ons_size, onsIndexPtr);
-    
     insBufferReadyEvent.wait();
     cudaDeviceSynchronize();
-    // It seems device_vectors automatically deallocate memory
-    // analysisBuffer.clear();
+    return;
 }
 
 
@@ -192,7 +154,8 @@ __device__ __inline__ void computeBase(
 }
 
 
-__global__ void iterationKernel(
+// Currently unoptimized
+__global__ void iterationKernelMemory(
     Rect<1> edgesSpace,
     Rect<1> onsSpace,
     AffineAccessor<vertex,1> insBufferAcc,
@@ -208,7 +171,7 @@ __global__ void iterationKernel(
     size_t blockBase = blockIdx.x * blockDim.x;
     size_t threadCount = blockDim.x;
 
-    // Presumes that the ons set is congruous by ID as specified by original paper
+    // Presumes that the ons set is contiguous by ID as specified by original paper
     __shared__ vertex newVertexValues[256];
     // The final thread that corresponds to an actual vertex in ons
     __shared__ size_t finalEdgesIndex;
@@ -250,35 +213,86 @@ __global__ void iterationKernel(
 
 }
 
+__global__ void iterationKernelDivergence(
+    Rect<1> edgesSpace,
+    Rect<1> onsSpace,
+    AffineAccessor<vertex,1> insBufferAcc,
+    AffineAccessor<vertex,1> verticesAcc,
+    AffineAccessor<size_t,1> biiAcc,
+    AffineAccessor<size_t,1> boundariesAcc
+)
+{
+    // Gives us a single index within ons
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x + onsSpace.lo;
+    size_t blockBase = blockIdx.x * blockDim.x + onsSpace.lo;
+    size_t threadCount = blockDim.x;
+
+    // Presumes that the ons set is contiguous by ID as specified by original paper
+    __shared__ vertex newVertexValues[256];
+    __shared__ size_t boundaryValues[256 + 1];
+    // The final thread that corresponds to an actual vertex in ons
+    __shared__ size_t finalEdgesIndex;
+
+    // This thread corresponds to a single vertex within ons
+    if(onsSpace.contains(tid)){
+        newVertexValues[tid - blockBase] = initializeVertexBase(verticesAcc[tid]);
+        boundaryValues[tid - blockBase] = boundariesAcc[tid];
+    }
+    // TODO standardize rect index types with "using"
+    if(tid == blockBase + threadCount - 1){
+        finalEdgesIndex = boundariesAcc[min((size_t)onsSpace.hi, tid) + 1];
+        boundaryValues[min((size_t)onsSpace.hi, tid) - blockBase + 1] = finalEdgesIndex;
+    }
+    __syncthreads();
+
+    // Threads cooperatively run computations on edges
+    size_t iteratingOutputId = 0;
+    size_t initialEdgeIndex = boundaryValues[iteratingOutputId] + threadIdx.x;
+    for(size_t i = initialEdgeIndex; i < finalEdgesIndex; i += threadCount){
+        // TODO profile this divergence... (probably fine)
+        while(i >= boundaryValues[iteratingOutputId + 1]){
+            iteratingOutputId++;
+        }
+
+        computeBase(
+            newVertexValues,
+            iteratingOutputId,
+            i,
+            biiAcc,
+            insBufferAcc
+        );
+    }
+    __syncthreads();
+
+    //Write results back to zero copy memory
+    if(onsSpace.contains(tid)){
+        verticesAcc[tid] = newVertexValues[tid - blockBase];
+    }
+
+}
 
 __host__ void runIteration(
     IndexSpace<1> edgesSpace /* Represents the edges with outputs represented by ons*/,
-    IndexSpace<1> onsSpace,
+    IndexSpace<1> boundariesSpace,
     AffineAccessor<vertex,1> insBufferAcc /* Read inputs to edges here*/,
     AffineAccessor<vertex,1> verticesAcc /* Write final results here*/,
     AffineAccessor<size_t,1> biiAcc /* index of the input edge to be read in insBufferAcc*/,
-    AffineAccessor<size_t,1> onsAcc /* Used to get the outputs for writing back to zero_copy memory*/,
-    AffineAccessor<size_t,1> onsIndexAcc /* Where to start scan for a given vertex*/,
-    AffineAccessor<size_t,1> outputsAcc
+    AffineAccessor<size_t,1> boundariesAcc
 )
 {
-    assert(onsSpace.dense());
+    assert(boundariesSpace.dense());
     assert(edgesSpace.dense());
-    size_t onsCount = onsSpace.volume();
+    size_t onsCount = boundariesSpace.volume() - 1;
 
     int threadsPerBlock = 256;
     int numBlocks = (onsCount + threadsPerBlock - 1) / threadsPerBlock;
-    // log_app.print() << "onsSpace " << onsSpace;
-    // log_app.print() << "edgesSpace " << edgesSpace;
-    iterationKernel<<<numBlocks, threadsPerBlock>>>(
+    iterationKernelDivergence<<<numBlocks, threadsPerBlock>>>(
         edgesSpace.bounds,
-        onsSpace.bounds,
+        {boundariesSpace.bounds.lo, boundariesSpace.bounds.hi - 1},
         insBufferAcc,
         verticesAcc,
         biiAcc,
-        onsAcc,
-        onsIndexAcc,
-        outputsAcc
+        boundariesAcc
     );
 
     cudaDeviceSynchronize();

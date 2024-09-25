@@ -6,4 +6,11 @@ void printGeneralRegion(RegionInstance region, FieldID id){
       log_app.print() << acc.read(j.p);
     }
   }
-};
+  log_app.print() << "---------";
+}
+
+template<typename T>
+void printGeneralRegion(RegionInstance region, FieldID id, std::string label){
+  log_app.print() << label;
+  printGeneralRegion<T>(region, id);
+}

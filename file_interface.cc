@@ -28,6 +28,7 @@ void writeHardCoded(std::string fileName){
     outFile.close();
 }
 
+
 GraphRegions readGraphFromFile(std::string fileName){
     FILE* fd = fopen(fileName.c_str(), "rb");
 
@@ -38,6 +39,7 @@ GraphRegions readGraphFromFile(std::string fileName){
 
     IndexSpace<1> vertexSpace(Rect<1>(0,vertexCount - 1));
     IndexSpace<1> edgeSpace(Rect<1>(0,edgeCount - 1));
+    IndexSpace<1> boundariesSpace(Rect<1>(0,vertexCount));
 
     Processor p = Machine::ProcessorQuery(Machine::get_machine())
         .only_kind(Processor::LOC_PROC)
@@ -66,7 +68,6 @@ GraphRegions readGraphFromFile(std::string fileName){
 
     RegionInstance edges;
     fieldSizes[IN_VERTEX] = sizeof(size_t);
-    fieldSizes[OUT_VERTEX] = sizeof(size_t);
     Event edgesEvent = RegionInstance::create_instance(
         edges,
         nodeMemory,
@@ -77,36 +78,6 @@ GraphRegions readGraphFromFile(std::string fileName){
     );
     fieldSizes.clear();
 
-    Event::merge_events(
-        verticesEvent,
-        edgesEvent
-    ).wait();
-
-    // This part of the code loads in edges and edgeBoundaries
-    AffineAccessor<size_t,1>inputAcc(edges, IN_VERTEX);
-    AffineAccessor<size_t,1>outputAcc(edges, OUT_VERTEX);
-
-    // TODO We won't need this buffer/serial logic after optimizing the iteration kernel
-    // Just a temporary inbetween point for testing other functionality
-    int bufferSize = sizeof(size_t) * (vertexCount + 1);
-
-    size_t* colIndicesBuffer = (size_t*) malloc(bufferSize);
-    fread(colIndicesBuffer, bufferSize, 1, fd);
-    fread(inputAcc.ptr(0), sizeof(size_t) * edgeCount, 1, fd);
-
-    std::vector<size_t> boundaryVector;
-    int index = 0;
-    for(int i = 0; i < vertexCount; i++){
-        if(colIndicesBuffer[i + 1] - colIndicesBuffer[i]){
-            boundaryVector.push_back(index);
-        }
-        for(int j = 0; j < colIndicesBuffer[i + 1] - colIndicesBuffer[i]; j++){
-            outputAcc[index] = i;
-            index++;
-        }
-    }
-
-    IndexSpace<1> boundariesSpace(Rect<1>(0,boundaryVector.size() - 1));
     RegionInstance edgeBoundaries;
     fieldSizes[OUT_VERTEX] = sizeof(size_t);
     Event boundariesEvent = RegionInstance::create_instance(
@@ -117,24 +88,21 @@ GraphRegions readGraphFromFile(std::string fileName){
         0,
         ProfilingRequestSet()
     );
-    boundariesEvent.wait();
 
-    AffineAccessor<size_t,1>edgeBoundariesAcc(edgeBoundaries, OUT_VERTEX);
-    
-    for(int i = 0; i < boundaryVector.size(); i++){
-        edgeBoundariesAcc[i] = boundaryVector[i];
-    }
+    Event::merge_events(
+        verticesEvent,
+        edgesEvent,
+        boundariesEvent
+    ).wait();
 
-    fread(AffineAccessor<size_t,1>(vertices, VERTEX_ID).ptr(0), sizeof(vertex) * vertexCount, 1, fd);
+    // This part of the code loads in edges and edgeBoundaries
+    AffineAccessor<size_t,1>boundariesAcc(edgeBoundaries, OUT_VERTEX);
+    AffineAccessor<size_t,1>inputAcc(edges, IN_VERTEX);
+    AffineAccessor<size_t,1>verticesAcc(vertices, VERTEX_ID);
 
-    printGeneralRegion<vertex>(vertices, VERTEX_ID);
-    std::cout << "_____" << std::endl;
-    printGeneralRegion<size_t>(edges, IN_VERTEX);
-    std::cout << "_____" << std::endl;
-    printGeneralRegion<size_t>(edges, OUT_VERTEX);
-    std::cout << "_____" << std::endl;
-    printGeneralRegion<size_t>(edgeBoundaries, OUT_VERTEX);
-
+    fread(boundariesAcc.ptr(0), sizeof(size_t) * (vertexCount + 1), 1, fd);
+    fread(inputAcc.ptr(0), sizeof(size_t) * edgeCount, 1, fd);
+    fread(verticesAcc.ptr(0), sizeof(vertex) * vertexCount, 1, fd);
 
     return {vertices, edges, edgeBoundaries};
 }
